@@ -1,0 +1,485 @@
+---
+title: "Model Prep for Text Prediction - Milestone Report"
+author: "SarahLynn"
+date: "2/3/2021"
+output:
+  html_document:
+    df_print: paged
+---
+  
+  ```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)
+library(dplyr)
+library(tidyr)
+library(ngram)
+library(stringi)
+library(tm)
+library(ggplot2)
+```
+
+## Overview
+
+This report outlines the model preparation work for a text prediction application. Here we will cover loading and viewing the dataset, and exploratory analysis which will help guide our modeling approach. R code will be reported in the appendix.
+
+## Loading and Viewing the data
+
+For this project, we have 3 files to work with. One with documents downloaded from twitter, one from news sites, and one from blogs. Together, these will provide us a corpus to use to train our text prediction model. The files we are starting with are extremely large, as you can see in the table below. Therefore, for ease of exploration and building the model, we will start with a 10% sample of each file. Once we have a final model approach established, we will increase this sample, likely to 30% or whatever the system can reasonably handle, and evaluate accuracy. 
+
+```{r load1, echo=FALSE, results=TRUE,message=FALSE, warning=FALSE,cache=TRUE}
+setwd("C:/Users/Sarah Lynn/Desktop/Self Study/Coursera DS JH - Capstone/final/en_US")
+##open connection to twitter file
+con <- file("en_US.twitter.txt", "r")
+tot_lines_t <- length(readLines(con))
+close(con) 
+samp_size_t <- round(.3*tot_lines_t)  
+con <- file("en_US.twitter.txt", "r")
+sdata_t <- readLines(con,samp_size_t)   ##grabs ~1/3 of the data, 700k
+close(con) 
+
+##open connection to blog file
+con <- file("en_US.blogs.txt", "r")
+tot_lines_b <- length(readLines(con))
+close(con) 
+samp_size_b <- round(.3*tot_lines_b)
+con <- file("en_US.blogs.txt", "r")
+sdata_b <- readLines(con,samp_size_b)   ##grabs ~2/3 of the data, 630k
+close(con) 
+
+##open connection to news file
+con <- file("en_US.news.txt", "r")
+tot_lines_n <- length(readLines(con))
+close(con) 
+samp_size_n <- round(.3*tot_lines_n)  
+con <- file("en_US.news.txt", "r")
+sdata_n <- readLines(con,samp_size_n)   ##grabs ~90% of the data, 70k
+close(con) 
+
+
+###########################################################################################
+##summary stats about the data
+###########################################################################################
+# file sizes
+fst<- file.size("en_US.twitter.txt")/1000000 ###in megabytes
+fsn<-file.size("en_US.news.txt")/1000000
+fsb<-file.size("en_US.blogs.txt")/1000000
+# docs
+docst<-tot_lines_t
+docsb<-tot_lines_b
+docsn<-tot_lines_n
+#words
+wordst<-sum(stri_count_words(sdata_t))
+wordsb<-sum(stri_count_words(sdata_b))
+wordsn<-sum(stri_count_words(sdata_n))
+#sentences
+sentt<-sum(stri_count_boundaries(sdata_t, type='sentence'))
+sentb<-sum(stri_count_boundaries(sdata_b, type='sentence'))
+sentn<-sum(stri_count_boundaries(sdata_n, type='sentence'))
+##words per sentence
+wpst<-sum(stri_count_words(sdata_t))/sum(stri_count_boundaries(sdata_t, type='sentence'))
+wpsb<-sum(stri_count_words(sdata_b))/sum(stri_count_boundaries(sdata_b, type='sentence'))
+wpsn<-sum(stri_count_words(sdata_n))/sum(stri_count_boundaries(sdata_n, type='sentence'))
+##median words per doc
+mwordst<-median(stri_count_words(sdata_t))
+mwordsb<-median(stri_count_words(sdata_b))
+mwordsn<-median(stri_count_words(sdata_n))
+##median sentences per doc
+msentt<-median(stri_count_boundaries(sdata_t, type='sentence'))
+msentb<-median(stri_count_boundaries(sdata_b, type='sentence'))
+msentn<-median(stri_count_boundaries(sdata_n, type='sentence'))
+```
+
+Metric              |    twitter         |     news            |   blogs
+----------------    | ------------------ | ------------------- | -------------------
+file size in Mb     | `r round(fst)`Mb   | `r round(fsn)`Mb    | `r round(fsb)`Mb
+number of docs      |  `r docst`         | `r docsn`           |  `r docsb`
+words               |  `r wordst`        | `r wordsn`          | `r wordsb`
+sentences           | `r sentt`          | `r sentn`           | `r sentb`
+words per sentence  | `r round(wpst)`    | `r round(wpsn)`     | `r round(wpsb)`
+median words per doc| `r mwordst`        | `r mwordsn`         | `r mwordsb`
+meidan sentences per doc | `r msentt`    | `r msentn`          | `r msentb`
+
+
+Notice that the twitter file tends to have fewer words per sentence and fewer sentences per doc. Its interesting to note that this helps our corpus (which will consist of samples from all of these documents) be diversified and therefore hopefully a better, unbiased sample of language. 
+
+## Exploratory Data Analysis
+
+Next we will process and explore the data to help us understand what type of model will be most appropriate. We will do this on a random sample of the data, for efficiency. As for processing, we will remove profanity, convert to lowercase, and remove puncuation. For some analyses we may also remove stoppwords, but for now we will leave them in since the text predictor we are building will want to predict these stop words as well. 
+
+Below are a few figures showing the top 30 unigrams, bigrams, and trigrams, all of which we plan to use as we proceed to an n-gram prediction model. Notice that stopwords mainly dominate these top 30 spots, which we will have to evaluate later when to remove them if this interfere's with the prediction accuracy of the model. 
+
+
+```{r eda, echo=FALSE,results=FALSE,message=FALSE, warning=FALSE,cache=TRUE}
+###########################################################################################
+##test/sample subset of data
+###########################################################################################
+set.seed(101)
+train_t_size <- .1*samp_size_t
+train_t_ind <-sample(1:samp_size_t,train_t_size,replace=FALSE)
+training_t <- sdata_t[train_t_ind]
+
+train_b_size <- .1*samp_size_b
+train_b_ind <-sample(1:samp_size_b,train_b_size,replace=FALSE)
+training_b <- sdata_b[train_b_ind]
+
+train_n_size <- .1*samp_size_n
+train_n_ind <-sample(1:samp_size_n,train_n_size,replace=FALSE)
+training_n <- sdata_n[train_n_ind]
+
+###get rid of profanity
+setwd("C:/Users/Sarah Lynn/Desktop/Self Study/Coursera DS JH - Capstone")
+wd_loc <- getwd()
+profane_words <- read.csv(paste(wd_loc,"/profanity.csv",sep=""))
+training_t_clean <- removeWords(training_t,profane_words[1:14,1])  #removed 4433
+training_b_clean <- removeWords(training_b,profane_words[1:14,1])  #removed 766
+training_n_clean <- removeWords(training_n,profane_words[1:14,1])  #removed 35
+
+#############################################################################################
+##Unigrams
+#############################################################################################
+
+
+###clean out punctuation, stopwords, uppercase
+##combine datasets
+training1 <- c(training_t_clean,training_b_clean,training_n_clean)
+training1 <- tolower(training1)
+training2 <-gsub('[[:punct:] ]+',' ',training1)
+training2 <- Corpus(VectorSource(training2))
+##training5 <- tm_map(training4, removeWords, stopwords("english"))   #keep in because we want to predict stopwords too
+freq_mat<- slam::row_sums(TermDocumentMatrix(training2))
+m <- as.matrix(freq_mat)
+words <- rownames(m)
+counts1 <- as.vector(as.numeric(m))
+sort_freq_mat <- sort(freq_mat, decreasing=TRUE)
+
+#plot number of words with each count to see distribution
+#hist(sort_freq_mat,breaks=50,ylim=c(0,5000)) ####too skewed to be useful
+
+df <- as.data.frame(cbind(words,counts1))
+df$counts1 <- as.numeric(df$counts1)
+sdf <- df %>% arrange(desc(counts1))  
+
+sdf$cumcounts1 <- cumsum(sdf$counts1)   
+sdf$totcounts1 <- as.numeric(rep(max(sdf$cumcounts1),length(sdf$cumcounts1)))
+sdf$perccum <- sdf$cumcounts1/sdf$totcounts1
+unigram_perc <- rep(0,99)
+for (i in 1:99) {
+  p <- i/100
+  unigram_perc[i] <- min(which(sdf$perccum>p))  }
+
+#################################################################################################
+## bigrams
+#################################################################################################
+
+bigram_training3 <- removePunctuation(training1)
+bigram_training3 <- VCorpus(VectorSource(bigram_training3))
+#bigram_training3 <- tm_map(bigram_training3, removeWords, stopwords("english")) #keep in because we want to predict stopwords
+
+BigramTokenizer <-function(x) {unlist(lapply(ngrams(words(x), 2), paste, collapse = " "), use.names = FALSE)}
+dtm_bigram <- TermDocumentMatrix(bigram_training3, control = list(tokenize = BigramTokenizer))
+
+bigram_freq <-slam::row_sums(dtm_bigram)
+sort_bigram_freq <- sort(bigram_freq,decreasing=TRUE)
+
+bigram_m <- as.matrix(bigram_freq)
+bigram_words <- rownames(bigram_m)
+bigram_counts1 <- as.vector(as.numeric(bigram_m))
+
+bigram_df <- as.data.frame(cbind(bigram_words,bigram_counts1))
+bigram_df$bigram_counts1 <- as.numeric(bigram_df$bigram_counts1)
+bigram_sdf <- bigram_df %>% arrange(desc(bigram_counts1))  
+
+bigram_sdf$cumcounts1 <- cumsum(bigram_sdf$bigram_counts1)   
+bigram_sdf$totcounts1 <- as.numeric(rep(max(bigram_sdf$cumcounts1),length(bigram_sdf$cumcounts1)))
+bigram_sdf$perccum <- bigram_sdf$cumcounts1/bigram_sdf$totcounts1
+bigram_perc <- rep(0,99)
+for (i in 1:99) {
+  p <- i/100
+  bigram_perc[i] <- min(which(bigram_sdf$perccum>p))  }
+
+#################################################################################################
+## trigrams
+#################################################################################################
+
+trigram_training3 <- removePunctuation(training1)
+trigram_training3 <- VCorpus(VectorSource(trigram_training3))
+#trigram_training3 <- tm_map(trigram_training3, removeWords, stopwords("english")) #keep in because we want to predict stopwords
+
+TrigramTokenizer <-function(x) {unlist(lapply(ngrams(words(x), 3), paste, collapse = " "), use.names = FALSE)}
+dtm_trigram <- TermDocumentMatrix(trigram_training3, control = list(tokenize = TrigramTokenizer))
+
+trigram_freq <-slam::row_sums(dtm_trigram)
+sort_trigram_freq <- sort(trigram_freq,decreasing=TRUE)
+
+trigram_m <- as.matrix(trigram_freq)
+trigram_words <- rownames(trigram_m)
+trigram_counts1 <- as.vector(as.numeric(trigram_m))
+
+trigram_df <- as.data.frame(cbind(trigram_words,trigram_counts1))
+trigram_df$trigram_counts1 <- as.numeric(trigram_df$trigram_counts1)
+trigram_sdf <- trigram_df %>% arrange(desc(trigram_counts1))  
+
+trigram_sdf$cumcounts1 <- cumsum(trigram_sdf$trigram_counts1)   
+trigram_sdf$totcounts1 <- as.numeric(rep(max(trigram_sdf$cumcounts1),length(trigram_sdf$cumcounts1)))
+trigram_sdf$perccum <- trigram_sdf$cumcounts1/trigram_sdf$totcounts1
+trigram_perc <- rep(0,99)
+for (i in 1:99) {
+  p <- i/100
+  trigram_perc[i] <- min(which(trigram_sdf$perccum>p))  }
+
+```
+
+```{r edaplots, echo=FALSE, results=TRUE,message=FALSE, warning=FALSE,out.width="70%"}
+ggplot(sdf[1:30,], aes(x = reorder(words[1:30], counts1[1:30]), y = counts1[1:30])) +
+  geom_col() +
+  labs(title="Word Count Data",
+       x = NULL,
+       y = "Frequency") +
+  coord_flip()
+
+ggplot(bigram_sdf[1:30,], aes(x = reorder(bigram_words[1:30], bigram_counts1[1:30]), y = bigram_counts1[1:30])) +
+  geom_col() +
+  labs(title="Bigram Count Data",
+       x = NULL,
+       y = "Frequency") +
+  coord_flip()
+
+ggplot(trigram_sdf[1:30,], aes(x = reorder(trigram_words[1:30], trigram_counts1[1:30]), y = trigram_counts1[1:30])) +
+  geom_col() +
+  labs(title="Trigram Count Data",
+       x = NULL,
+       y = "Frequency") +
+  coord_flip()
+```
+
+Below are some graphs showing the number of ngrams that make up the %s of ngram instances. Notice that for unigrams, this distribution is HEAVILY skewed, meaning most of the instances for unigrams come from the first few thousand words, and after there there is a long tail of single instance words. While the tails are still long for bigram and trigrams, you can see how they are not nearly as skewed.
+
+```{r edaplots2, echo=FALSE, results=TRUE,message=FALSE, warning=FALSE,out.width="100%"}
+par(mfrow=c(1,3))
+plot(unigram_perc, xlab="% of total word instances", ylab="number of unigrams",type="l")
+plot(bigram_perc, xlab="% of total bigram instances", ylab="number of bigrams",type="l")
+plot(trigram_perc, xlab="% of total trigram instances", ylab="number of bigrams",type="l")
+```
+
+An interesting note here is that, because of this large skew in all ngrams, this may lend itself well to having two models; the first would be a much simpler model based on just the top 5-10k ngram terms, and this would run much faster than the full model, so for efficiency sake we could potentially check first if this simpler model returns output, and if not then move to the full model so we have better coverage. We will vet this idea more as we build our model. 
+
+## Model Plans
+
+As we proceed now to build the model, we have the following points in mind: 
+
+1) Efficiency - since we are dealing with extremely large datasets, we will take the following steps to try to improve efficiency. First, always work with a random sample of the original files. Second, store ngram processed data with data keys for quicker retreival. And third, as mentioned above, consider a simple/top ngram model that proceeds to a full model if output is missing. 
+
+2) Model approach - we will beging with a markcov chain model approach. This is the most intuitive and seems powerful in literature I've explored. With this, we will employ smoothing to help deal with unknown ngrams. First we will try to smooth with Zipf's law as this seems most appropriate if we are working with a slightly smaller sample than optimal (which we may for run-time sake). But if we need to improve accuracy later we may try Kneser-Ney/absoulte discounting. Within the model, we will start with up to trigram phrases. Depending on accuracy and run-time, we may explore expanding this further later, but in literature, trigrams seems most common. 
+
+3) Model evaluation - to evaluate the model we will look at accuracy on a test set of data that we will not have viewed previously. We will see if we can accurately predict the next word given a random portion of a sentence. Since we plan to work with a sample of our data, we will have lots of room to iterate back to our training data, tweak the model, and re-test on a new test set. That being said, we will reserve at least a 10% sample from the original dataset that we will not use in building our model, but instead use only for final evaluation. Also, to evaluate the model, we will explore calculating a perplexity score.
+
+## Appendix of code
+
+```{r fullscript , results=FALSE,fig.show="hide"}
+setwd("C:/Users/Sarah Lynn/Desktop/Self Study/Coursera DS JH - Capstone/final/en_US")
+##open connection to twitter file
+con <- file("en_US.twitter.txt", "r")
+tot_lines_t <- length(readLines(con))
+close(con) 
+samp_size_t <- round(.3*tot_lines_t)  
+con <- file("en_US.twitter.txt", "r")
+sdata_t <- readLines(con,samp_size_t)   ##grabs ~1/3 of the data, 700k
+close(con) 
+
+##open connection to blog file
+con <- file("en_US.blogs.txt", "r")
+tot_lines_b <- length(readLines(con))
+close(con) 
+samp_size_b <- round(.3*tot_lines_b)
+con <- file("en_US.blogs.txt", "r")
+sdata_b <- readLines(con,samp_size_b)   ##grabs ~2/3 of the data, 630k
+close(con) 
+
+##open connection to news file
+con <- file("en_US.news.txt", "r")
+tot_lines_n <- length(readLines(con))
+close(con) 
+samp_size_n <- round(.3*tot_lines_n)  
+con <- file("en_US.news.txt", "r")
+sdata_n <- readLines(con,samp_size_n)   ##grabs ~90% of the data, 70k
+close(con) 
+
+
+###########################################################################################
+##summary stats about the data
+###########################################################################################
+# file sizes
+fst<- file.size("en_US.twitter.txt")/1000000 ###in megabytes
+fsn<-file.size("en_US.news.txt")/1000000
+fsb<-file.size("en_US.blogs.txt")/1000000
+# docs
+docst<-tot_lines_t
+docsb<-tot_lines_b
+docsn<-tot_lines_n
+#words
+wordst<-sum(stri_count_words(sdata_t))
+wordsb<-sum(stri_count_words(sdata_b))
+wordsn<-sum(stri_count_words(sdata_n))
+#sentences
+sentt<-sum(stri_count_boundaries(sdata_t, type='sentence'))
+sentb<-sum(stri_count_boundaries(sdata_b, type='sentence'))
+sentn<-sum(stri_count_boundaries(sdata_n, type='sentence'))
+##words per sentence
+wpst<-sum(stri_count_words(sdata_t))/sum(stri_count_boundaries(sdata_t, type='sentence'))
+wpsb<-sum(stri_count_words(sdata_b))/sum(stri_count_boundaries(sdata_b, type='sentence'))
+wpsn<-sum(stri_count_words(sdata_n))/sum(stri_count_boundaries(sdata_n, type='sentence'))
+##median words per doc
+mwordst<-median(stri_count_words(sdata_t))
+mwordsb<-median(stri_count_words(sdata_b))
+mwordsn<-median(stri_count_words(sdata_n))
+##median sentences per doc
+msentt<-median(stri_count_boundaries(sdata_t, type='sentence'))
+msentb<-median(stri_count_boundaries(sdata_b, type='sentence'))
+msentn<-median(stri_count_boundaries(sdata_n, type='sentence'))
+
+###########################################################################################
+##test/sample subset of data
+###########################################################################################
+set.seed(101)
+train_t_size <- .1*samp_size_t
+train_t_ind <-sample(1:samp_size_t,train_t_size,replace=FALSE)
+training_t <- sdata_t[train_t_ind]
+
+train_b_size <- .1*samp_size_b
+train_b_ind <-sample(1:samp_size_b,train_b_size,replace=FALSE)
+training_b <- sdata_b[train_b_ind]
+
+train_n_size <- .1*samp_size_n
+train_n_ind <-sample(1:samp_size_n,train_n_size,replace=FALSE)
+training_n <- sdata_n[train_n_ind]
+
+###get rid of profanity
+setwd("C:/Users/Sarah Lynn/Desktop/Self Study/Coursera DS JH - Capstone")
+wd_loc <- getwd()
+profane_words <- read.csv(paste(wd_loc,"/profanity.csv",sep=""))
+training_t_clean <- removeWords(training_t,profane_words[1:14,1])  #removed 4433
+training_b_clean <- removeWords(training_b,profane_words[1:14,1])  #removed 766
+training_n_clean <- removeWords(training_n,profane_words[1:14,1])  #removed 35
+
+#############################################################################################
+##Unigrams
+#############################################################################################
+
+
+###clean out punctuation, stopwords, uppercase
+##combine datasets
+training1 <- c(training_t_clean,training_b_clean,training_n_clean)
+training1 <- tolower(training1)
+training2 <-gsub('[[:punct:] ]+',' ',training1)
+training2 <- Corpus(VectorSource(training2))
+##training5 <- tm_map(training4, removeWords, stopwords("english"))   #keep in because we want to predict stopwords too
+freq_mat<- slam::row_sums(TermDocumentMatrix(training2))
+m <- as.matrix(freq_mat)
+words <- rownames(m)
+counts1 <- as.vector(as.numeric(m))
+sort_freq_mat <- sort(freq_mat, decreasing=TRUE)
+
+#plot number of words with each count to see distribution
+#hist(sort_freq_mat,breaks=50,ylim=c(0,5000)) ####too skewed to be useful
+
+df <- as.data.frame(cbind(words,counts1))
+df$counts1 <- as.numeric(df$counts1)
+sdf <- df %>% arrange(desc(counts1))  
+
+sdf$cumcounts1 <- cumsum(sdf$counts1)   
+sdf$totcounts1 <- as.numeric(rep(max(sdf$cumcounts1),length(sdf$cumcounts1)))
+sdf$perccum <- sdf$cumcounts1/sdf$totcounts1
+unigram_perc <- rep(0,99)
+for (i in 1:99) {
+  p <- i/100
+  unigram_perc[i] <- min(which(sdf$perccum>p))  }
+
+#################################################################################################
+## bigrams
+#################################################################################################
+
+bigram_training3 <- removePunctuation(training1)
+bigram_training3 <- VCorpus(VectorSource(bigram_training3))
+#bigram_training3 <- tm_map(bigram_training3, removeWords, stopwords("english")) #keep in because we want to predict stopwords
+
+BigramTokenizer <-function(x) {unlist(lapply(ngrams(words(x), 2), paste, collapse = " "), use.names = FALSE)}
+dtm_bigram <- TermDocumentMatrix(bigram_training3, control = list(tokenize = BigramTokenizer))
+
+bigram_freq <-slam::row_sums(dtm_bigram)
+sort_bigram_freq <- sort(bigram_freq,decreasing=TRUE)
+
+bigram_m <- as.matrix(bigram_freq)
+bigram_words <- rownames(bigram_m)
+bigram_counts1 <- as.vector(as.numeric(bigram_m))
+
+bigram_df <- as.data.frame(cbind(bigram_words,bigram_counts1))
+bigram_df$bigram_counts1 <- as.numeric(bigram_df$bigram_counts1)
+bigram_sdf <- bigram_df %>% arrange(desc(bigram_counts1))  
+
+bigram_sdf$cumcounts1 <- cumsum(bigram_sdf$bigram_counts1)   
+bigram_sdf$totcounts1 <- as.numeric(rep(max(bigram_sdf$cumcounts1),length(bigram_sdf$cumcounts1)))
+bigram_sdf$perccum <- bigram_sdf$cumcounts1/bigram_sdf$totcounts1
+bigram_perc <- rep(0,99)
+for (i in 1:99) {
+  p <- i/100
+  bigram_perc[i] <- min(which(bigram_sdf$perccum>p))  }
+
+#################################################################################################
+## trigrams
+#################################################################################################
+
+trigram_training3 <- removePunctuation(training1)
+trigram_training3 <- VCorpus(VectorSource(trigram_training3))
+#trigram_training3 <- tm_map(trigram_training3, removeWords, stopwords("english")) #keep in because we want to predict stopwords
+
+TrigramTokenizer <-function(x) {unlist(lapply(ngrams(words(x), 3), paste, collapse = " "), use.names = FALSE)}
+dtm_trigram <- TermDocumentMatrix(trigram_training3, control = list(tokenize = TrigramTokenizer))
+
+trigram_freq <-slam::row_sums(dtm_trigram)
+sort_trigram_freq <- sort(trigram_freq,decreasing=TRUE)
+
+trigram_m <- as.matrix(trigram_freq)
+trigram_words <- rownames(trigram_m)
+trigram_counts1 <- as.vector(as.numeric(trigram_m))
+
+trigram_df <- as.data.frame(cbind(trigram_words,trigram_counts1))
+trigram_df$trigram_counts1 <- as.numeric(trigram_df$trigram_counts1)
+trigram_sdf <- trigram_df %>% arrange(desc(trigram_counts1))  
+
+trigram_sdf$cumcounts1 <- cumsum(trigram_sdf$trigram_counts1)   
+trigram_sdf$totcounts1 <- as.numeric(rep(max(trigram_sdf$cumcounts1),length(trigram_sdf$cumcounts1)))
+trigram_sdf$perccum <- trigram_sdf$cumcounts1/trigram_sdf$totcounts1
+trigram_perc <- rep(0,99)
+for (i in 1:99) {
+  p <- i/100
+  trigram_perc[i] <- min(which(trigram_sdf$perccum>p))  }
+
+#####################################################################################################
+###plots
+#####################################################################################################
+ggplot(sdf[1:30,], aes(x = reorder(words[1:30], counts1[1:30]), y = counts1[1:30])) +
+  geom_col() +
+  labs(title="Word Count Data",
+       x = NULL,
+       y = "Frequency") +
+  coord_flip()
+
+ggplot(bigram_sdf[1:30,], aes(x = reorder(bigram_words[1:30], bigram_counts1[1:30]), y = bigram_counts1[1:30])) +
+  geom_col() +
+  labs(title="Bigram Count Data",
+       x = NULL,
+       y = "Frequency") +
+  coord_flip()
+
+ggplot(trigram_sdf[1:30,], aes(x = reorder(trigram_words[1:30], trigram_counts1[1:30]), y = trigram_counts1[1:30])) +
+  geom_col() +
+  labs(title="Trigram Count Data",
+       x = NULL,
+       y = "Frequency") +
+  coord_flip()
+
+par(mfrow=c(1,3))
+plot(unigram_perc, xlab="% of total word instances", ylab="number of unigrams",type="l")
+plot(bigram_perc, xlab="% of total bigram instances", ylab="number of bigrams",type="l")
+plot(trigram_perc, xlab="% of total trigram instances", ylab="number of bigrams",type="l")
+```
