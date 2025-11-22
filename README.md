@@ -1,0 +1,1 @@
+This repo is for a capstone project as part of a Coursera John Hopkins R Data Science course. For this project, I outlined the model preparation work for a text prediction application. The attached files were some of what was used for this project, and include a project report write up. 
